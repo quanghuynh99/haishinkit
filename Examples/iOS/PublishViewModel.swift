@@ -336,18 +336,12 @@ final class PublishViewModel: ObservableObject {
 
             await configureScreen(isGPURendererEnabled: true)
 
-            let backCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
-            let frontCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
-            try? await mixer.attachVideo(backCamera, track: 0) { videoUnit in
-                videoUnit.isVideoMirrored = false
-            }
-            try? await mixer.attachVideo(frontCamera, track: 1) { videoUnit in
-                videoUnit.isVideoMirrored = true
-            }
+            await attachVideoTracks()
             var videoMixerSettings2 = await mixer.videoMixerSettings
             videoMixerSettings2.mainTrack = currentPosition == .front ? 1 : 0
             await mixer.setVideoMixerSettings(videoMixerSettings2)
             currentCamera = currentPosition == .front ? "Front" : "Back"
+            await applyFrameRate(currentFPS.frameRate)
             if audioCaptureMode == .audioSource {
                 try? await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
             }
@@ -371,6 +365,7 @@ final class PublishViewModel: ObservableObject {
             await makeSession(preference)
             let isLandscape = UIDevice.current.orientation.isLandscape
             await updateVideoEncoderSize(isLandscape: isLandscape)
+            await applyFrameRate(currentFPS.frameRate)
             let screenSize = await mixer.screen.size
             if let session = self.session {
                 let videoSettings = await session.stream.videoSettings
@@ -399,6 +394,42 @@ final class PublishViewModel: ObservableObject {
     private func configureScreen(isGPURendererEnabled: Bool) async {
         await mixer.screen.size = .init(width: 720, height: 1280)
         await mixer.screen.backgroundColor = UIColor.black.cgColor
+    }
+
+    private func attachVideoTracks() async {
+        let backCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        let frontCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+        if isDualCameraEnabled {
+            try? await mixer.attachVideo(backCamera, track: 0) { videoUnit in
+                videoUnit.isVideoMirrored = false
+                videoUnit.preferredVideoStabilizationMode = .standard
+            }
+            try? await mixer.attachVideo(frontCamera, track: 1) { videoUnit in
+                videoUnit.isVideoMirrored = true
+                videoUnit.preferredVideoStabilizationMode = .standard
+            }
+            return
+        }
+        switch currentPosition {
+        case .back:
+            try? await mixer.attachVideo(backCamera, track: 0) { videoUnit in
+                videoUnit.isVideoMirrored = false
+                videoUnit.preferredVideoStabilizationMode = .standard
+            }
+            try? await mixer.attachVideo(nil, track: 1)
+        case .front:
+            try? await mixer.attachVideo(nil, track: 0)
+            try? await mixer.attachVideo(frontCamera, track: 1) { videoUnit in
+                videoUnit.isVideoMirrored = true
+                videoUnit.preferredVideoStabilizationMode = .standard
+            }
+        @unknown default:
+            try? await mixer.attachVideo(backCamera, track: 0) { videoUnit in
+                videoUnit.isVideoMirrored = false
+                videoUnit.preferredVideoStabilizationMode = .standard
+            }
+            try? await mixer.attachVideo(nil, track: 1)
+        }
     }
 
     private func startVolumeMonitoring() {
@@ -460,6 +491,9 @@ final class PublishViewModel: ObservableObject {
                     videoScreenObject?.track = 1
                 }
             }
+            if !isDualCameraEnabled {
+                await attachVideoTracks()
+            }
         }
     }
 
@@ -483,55 +517,65 @@ final class PublishViewModel: ObservableObject {
     }
 
     func toggleDualCamera() {
-        let isEnabled = isDualCameraEnabled
+        let willEnable = !isDualCameraEnabled
         let position = currentPosition
-        Task { @ScreenActor in
-            if isEnabled {
-                if let videoScreenObject {
-                    await mixer.screen.removeChild(videoScreenObject)
+        Task {
+            await MainActor.run {
+                isDualCameraEnabled = willEnable
+            }
+            await attachVideoTracks()
+            if willEnable {
+                Task { @ScreenActor in
+                    if let videoScreenObject {
+                        videoScreenObject.size = .init(width: 400, height: 224)
+                        videoScreenObject.cornerRadius = 8.0
+                        videoScreenObject.track = position == .front ? 0 : 1
+                        videoScreenObject.verticalAlignment = .top
+                        videoScreenObject.horizontalAlignment = .right
+                        videoScreenObject.layoutMargin = .init(top: 32, left: 0, bottom: 0, right: 32)
+                        videoScreenObject.invalidateLayout()
+                        try? await mixer.screen.addChild(videoScreenObject)
+                    }
                 }
-                await MainActor.run { isDualCameraEnabled = false }
             } else {
-                if let videoScreenObject {
-                    videoScreenObject.size = .init(width: 400, height: 224)
-                    videoScreenObject.cornerRadius = 8.0
-                    videoScreenObject.track = position == .front ? 0 : 1
-                    videoScreenObject.verticalAlignment = .top
-                    videoScreenObject.horizontalAlignment = .right
-                    videoScreenObject.layoutMargin = .init(top: 32, left: 0, bottom: 0, right: 32)
-                    videoScreenObject.invalidateLayout()
-                    try? await mixer.screen.addChild(videoScreenObject)
+                Task { @ScreenActor in
+                    if let videoScreenObject {
+                        await mixer.screen.removeChild(videoScreenObject)
+                    }
                 }
-                await MainActor.run { isDualCameraEnabled = true }
             }
         }
     }
 
     func setFrameRate(_ fps: Float64) {
         Task {
-            do {
-                try? await mixer.configuration(video: 0) { video in
-                    do {
-                        try video.setFrameRate(fps)
-                    } catch {
-                        logger.error(error)
-                    }
+            await applyFrameRate(fps)
+        }
+    }
+
+    private func applyFrameRate(_ fps: Float64) async {
+        do {
+            try? await mixer.configuration(video: 0) { video in
+                do {
+                    try video.setFrameRate(fps)
+                } catch {
+                    logger.error(error)
                 }
-                try? await mixer.configuration(video: 1) { video in
-                    do {
-                        try video.setFrameRate(fps)
-                    } catch {
-                        logger.error(error)
-                    }
-                }
-                try await mixer.setFrameRate(fps)
-                if var videoSettings = await session?.stream.videoSettings {
-                    videoSettings.expectedFrameRate = fps
-                    try? await session?.stream.setVideoSettings(videoSettings)
-                }
-            } catch {
-                logger.error(error)
             }
+            try? await mixer.configuration(video: 1) { video in
+                do {
+                    try video.setFrameRate(fps)
+                } catch {
+                    logger.error(error)
+                }
+            }
+            try await mixer.setFrameRate(fps)
+            if var videoSettings = await session?.stream.videoSettings {
+                videoSettings.expectedFrameRate = fps
+                try? await session?.stream.setVideoSettings(videoSettings)
+            }
+        } catch {
+            logger.error(error)
         }
     }
 
