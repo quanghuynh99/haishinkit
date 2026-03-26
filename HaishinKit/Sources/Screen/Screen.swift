@@ -22,6 +22,9 @@ public final class Screen: ScreenObjectContainerConvertible {
 
     private static let lockFlags = CVPixelBufferLockFlags(rawValue: 0)
     private static let preferredTimescale: CMTimeScale = 1000000000
+    private static let minimumFrameDuration: TimeInterval = 1.0 / 240.0
+    private static let maximumVideoCaptureLatency: TimeInterval = 0.25
+    private static let videoCaptureLatencySmoothingFactor: Double = 0.2
 
     /// The total of child counts.
     public var childCounts: Int {
@@ -159,13 +162,14 @@ public final class Screen: ScreenObjectContainerConvertible {
         if let dictionary = CVBufferCopyAttachments(pixelBuffer, .shouldNotPropagate) {
             CVBufferSetAttachments(pixelBuffer, dictionary, .shouldPropagate)
         }
-        let presentationTimeStamp = CMTime(seconds: updateFrame.timestamp - videoCaptureLatency, preferredTimescale: Self.preferredTimescale)
-        guard self.presentationTimeStamp <= presentationTimeStamp else {
-            return nil
+        let frameDuration = max(updateFrame.targetTimestamp - updateFrame.timestamp, Self.minimumFrameDuration)
+        var presentationTimeStamp = CMTime(seconds: updateFrame.timestamp - videoCaptureLatency, preferredTimescale: Self.preferredTimescale)
+        if presentationTimeStamp <= self.presentationTimeStamp {
+            presentationTimeStamp = self.presentationTimeStamp + CMTime(seconds: frameDuration, preferredTimescale: Self.preferredTimescale)
         }
         self.presentationTimeStamp = presentationTimeStamp
         var timingInfo = CMSampleTimingInfo(
-            duration: CMTime(seconds: updateFrame.targetTimestamp - updateFrame.timestamp, preferredTimescale: Self.preferredTimescale),
+            duration: CMTime(seconds: frameDuration, preferredTimescale: Self.preferredTimescale),
             presentationTimeStamp: presentationTimeStamp,
             decodeTimeStamp: .invalid
         )
@@ -208,8 +212,13 @@ public final class Screen: ScreenObjectContainerConvertible {
             return
         }
         let hostPresentationTimeStamp = presentationTimeStamp.convertTime(from: synchronizationClock)
-        let diff = ceil((targetTimestamp - hostPresentationTimeStamp.seconds) * 10000) / 10000
-        videoCaptureLatency = diff
+        let diff = targetTimestamp - hostPresentationTimeStamp.seconds
+        let clamped = min(max(diff, 0), Self.maximumVideoCaptureLatency)
+        if videoCaptureLatency == 0 {
+            videoCaptureLatency = clamped
+        } else {
+            videoCaptureLatency += (clamped - videoCaptureLatency) * Self.videoCaptureLatencySmoothingFactor
+        }
     }
 
     func reset() {

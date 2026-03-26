@@ -330,11 +330,8 @@ final class PublishViewModel: ObservableObject {
                 }
             }
             await mixer.setMonitoringEnabled(DeviceUtil.isHeadphoneConnected())
-            var videoMixerSettings = await mixer.videoMixerSettings
-            videoMixerSettings.mode = .offscreen
-            await mixer.setVideoMixerSettings(videoMixerSettings)
-
             await configureScreen(isGPURendererEnabled: true)
+            await updateVideoMixerMode()
 
             await attachVideoTracks()
             var videoMixerSettings2 = await mixer.videoMixerSettings
@@ -432,6 +429,17 @@ final class PublishViewModel: ObservableObject {
         }
     }
 
+    private func updateVideoMixerMode() async {
+        var settings = await mixer.videoMixerSettings
+        let nextMode: VideoMixerSettings.Mode = (isDualCameraEnabled || visualEffectItem != .none) ? .offscreen : .passthrough
+        guard settings.mode != nextMode else {
+            return
+        }
+        settings.mode = nextMode
+        await mixer.setVideoMixerSettings(settings)
+        try? await mixer.setFrameRate(currentFPS.frameRate)
+    }
+
     private func startVolumeMonitoring() {
         let audioSession = AVAudioSession.sharedInstance()
         try? audioSession.setActive(true)
@@ -502,10 +510,14 @@ final class PublishViewModel: ObservableObject {
             if let currentVideoEffect {
                 _ = await mixer.screen.unregisterVideoEffect(currentVideoEffect)
             }
+            currentVideoEffect = nil
             if let videoEffect = videoEffect.makeVideoEffect() {
                 currentVideoEffect = videoEffect
                 _ = await mixer.screen.registerVideoEffect(videoEffect)
             }
+        }
+        Task {
+            await updateVideoMixerMode()
         }
     }
 
@@ -544,6 +556,7 @@ final class PublishViewModel: ObservableObject {
                     }
                 }
             }
+            await updateVideoMixerMode()
         }
     }
 
