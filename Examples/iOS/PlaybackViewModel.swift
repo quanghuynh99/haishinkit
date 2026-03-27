@@ -35,8 +35,7 @@ final class PlaybackViewModel: ObservableObject {
         error = nil
     }
 
-    private var mtView: MTHKView?
-    private var pipView: PiPHKView?
+    private var view: PiPHKView?
     private var session: (any StreamSession)?
     private let audioPlayer = AudioPlayer(audioEngine: AVAudioEngine())
     private var pictureInPictureController: AVPictureInPictureController?
@@ -65,20 +64,17 @@ final class PlaybackViewModel: ObservableObject {
         }
     }
 
-    func makeSession(_ preference: PreferenceViewModel) async {
+    func makeSession() async {
         do {
-            session = try await StreamSessionBuilderFactory.shared.make(preference.makeURL())
+            session = try await StreamSessionBuilderFactory.shared.make(Preference.default.makeURL())
                 .setMode(.playback)
                 .build()
             await session?.setMaxRetryCount(0)
             guard let session else {
                 return
             }
-            if let mtView {
-                await session.stream.addOutput(mtView)
-            }
-            if let pipView {
-                await session.stream.addOutput(pipView)
+            if let view {
+                await session.stream.addOutput(view)
             }
             await session.stream.attachAudioPlayer(audioPlayer)
             Task {
@@ -102,10 +98,6 @@ extension PlaybackViewModel: MTHKViewRepresentable.PreviewSource {
     // MARK: MTHKViewRepresentable.PreviewSource
     nonisolated func connect(to view: MTHKView) {
         Task { @MainActor in
-            self.mtView = view
-            if let session {
-                await session.stream.addOutput(view)
-            }
         }
     }
 }
@@ -114,10 +106,7 @@ extension PlaybackViewModel: PiPHKViewRepresentable.PreviewSource {
     // MARK: PiPHKSwiftUiView.PreviewSource
     nonisolated func connect(to view: HaishinKit.PiPHKView) {
         Task { @MainActor in
-            self.pipView = view
-            if let session {
-                await session.stream.addOutput(view)
-            }
+            self.view = view
             if pictureInPictureController == nil {
                 pictureInPictureController = AVPictureInPictureController(contentSource: .init(sampleBufferDisplayLayer: view.layer, playbackDelegate: PlaybackDelegate()))
             }

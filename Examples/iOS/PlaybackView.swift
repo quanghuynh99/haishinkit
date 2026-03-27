@@ -102,7 +102,7 @@ struct PlaybackView: View {
         }
         .background(Color.black)
         .task {
-            await model.makeSession(preference)
+            await model.makeSession()
         }
     }
 }
