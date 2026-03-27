@@ -54,7 +54,7 @@ private extension ScreenTimingSettings {
 /// An object that manages offscreen rendering a foundation.
 public final class Screen: ScreenObjectContainerConvertible {
     /// The default screen size.
-    public static let size = CGSize(width: 1920, height: 1080)
+    public static let size = CGSize(width: 1280, height: 720)
 
     private static let lockFlags = CVPixelBufferLockFlags(rawValue: 0)
     private static let preferredTimescale: CMTimeScale = 1000000000
