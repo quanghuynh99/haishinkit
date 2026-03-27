@@ -15,18 +15,49 @@ public protocol ScreenDelegate: AnyObject {
     func screen(_ screen: Screen, willLayout time: CMTime)
 }
 
+public struct ScreenTimingSettings: Codable, Sendable {
+    public static let `default` = ScreenTimingSettings()
+
+    public var minimumFrameDuration: TimeInterval
+    public var maximumFrameDuration: TimeInterval
+    public var minimumMonotonicStep: TimeInterval
+    public var maximumVideoCaptureLatency: TimeInterval
+    public var videoCaptureLatencySmoothingFactor: Double
+
+    public init(
+        minimumFrameDuration: TimeInterval = 1.0 / 30.0,
+        maximumFrameDuration: TimeInterval = 1.0 / 15.0,
+        minimumMonotonicStep: TimeInterval = 1.0 / 600.0,
+        maximumVideoCaptureLatency: TimeInterval = 0.25,
+        videoCaptureLatencySmoothingFactor: Double = 0.2
+    ) {
+        self.minimumFrameDuration = minimumFrameDuration
+        self.maximumFrameDuration = maximumFrameDuration
+        self.minimumMonotonicStep = minimumMonotonicStep
+        self.maximumVideoCaptureLatency = maximumVideoCaptureLatency
+        self.videoCaptureLatencySmoothingFactor = videoCaptureLatencySmoothingFactor
+    }
+}
+
+private extension ScreenTimingSettings {
+    func normalized() -> ScreenTimingSettings {
+        var settings = self
+        settings.minimumFrameDuration = max(settings.minimumFrameDuration, .ulpOfOne)
+        settings.maximumFrameDuration = max(settings.maximumFrameDuration, settings.minimumFrameDuration)
+        settings.minimumMonotonicStep = max(settings.minimumMonotonicStep, .ulpOfOne)
+        settings.maximumVideoCaptureLatency = max(settings.maximumVideoCaptureLatency, 0)
+        settings.videoCaptureLatencySmoothingFactor = min(max(settings.videoCaptureLatencySmoothingFactor, 0), 1)
+        return settings
+    }
+}
+
 /// An object that manages offscreen rendering a foundation.
 public final class Screen: ScreenObjectContainerConvertible {
     /// The default screen size.
-    public static let size = CGSize(width: 1280, height: 720)
+    public static let size = CGSize(width: 1920, height: 1080)
 
     private static let lockFlags = CVPixelBufferLockFlags(rawValue: 0)
     private static let preferredTimescale: CMTimeScale = 1000000000
-    private static let minimumFrameDuration: TimeInterval = 1.0 / 60.0
-    private static let maximumFrameDuration: TimeInterval = 1.0 / 15.0
-    private static let minimumMonotonicStep: TimeInterval = 1.0 / 600.0
-    private static let maximumVideoCaptureLatency: TimeInterval = 0.25
-    private static let videoCaptureLatencySmoothingFactor: Double = 0.2
 
     /// The total of child counts.
     public var childCounts: Int {
@@ -105,6 +136,7 @@ public final class Screen: ScreenObjectContainerConvertible {
     }
     private var presentationTimeStamp: CMTime = .zero
     private var lastFrameDuration: TimeInterval = 1.0 / 30.0
+    private var timingSettings: ScreenTimingSettings = .default
 
     /// Creates a screen object.
     public init() {
@@ -130,6 +162,14 @@ public final class Screen: ScreenObjectContainerConvertible {
     /// Unregisters a video effect.
     public func unregisterVideoEffect(_ effect: some VideoEffect) -> Bool {
         return videoTrackScreenObject.unregisterVideoEffect(effect)
+    }
+
+    public func setTimingSettings(_ settings: ScreenTimingSettings) {
+        timingSettings = settings.normalized()
+    }
+
+    public func getTimingSettings() -> ScreenTimingSettings {
+        timingSettings
     }
 
     public func findById(_ id: String) -> ScreenObject? {
@@ -166,11 +206,12 @@ public final class Screen: ScreenObjectContainerConvertible {
             CVBufferSetAttachments(pixelBuffer, dictionary, .shouldPropagate)
         }
         let rawFrameDuration = updateFrame.targetTimestamp - updateFrame.timestamp
-        let frameDuration = min(max(rawFrameDuration > 0 ? rawFrameDuration : lastFrameDuration, Self.minimumFrameDuration), Self.maximumFrameDuration)
+        let settings = timingSettings
+        let frameDuration = min(max(rawFrameDuration > 0 ? rawFrameDuration : lastFrameDuration, settings.minimumFrameDuration), settings.maximumFrameDuration)
         lastFrameDuration = frameDuration
         var presentationTimeStamp = CMTime(seconds: updateFrame.timestamp - videoCaptureLatency, preferredTimescale: Self.preferredTimescale)
         if presentationTimeStamp <= self.presentationTimeStamp {
-            presentationTimeStamp = self.presentationTimeStamp + CMTime(seconds: Self.minimumMonotonicStep, preferredTimescale: Self.preferredTimescale)
+            presentationTimeStamp = self.presentationTimeStamp + CMTime(seconds: settings.minimumMonotonicStep, preferredTimescale: Self.preferredTimescale)
         }
         self.presentationTimeStamp = presentationTimeStamp
         var timingInfo = CMSampleTimingInfo(
@@ -217,12 +258,13 @@ public final class Screen: ScreenObjectContainerConvertible {
             return
         }
         let hostPresentationTimeStamp = presentationTimeStamp.convertTime(from: synchronizationClock)
+        let settings = timingSettings
         let diff = targetTimestamp - hostPresentationTimeStamp.seconds
-        let clamped = min(max(diff, 0), Self.maximumVideoCaptureLatency)
+        let clamped = min(max(diff, 0), settings.maximumVideoCaptureLatency)
         if videoCaptureLatency == 0 {
             videoCaptureLatency = clamped
         } else {
-            videoCaptureLatency += (clamped - videoCaptureLatency) * Self.videoCaptureLatencySmoothingFactor
+            videoCaptureLatency += (clamped - videoCaptureLatency) * settings.videoCaptureLatencySmoothingFactor
         }
     }
 
