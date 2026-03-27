@@ -22,7 +22,9 @@ public final class Screen: ScreenObjectContainerConvertible {
 
     private static let lockFlags = CVPixelBufferLockFlags(rawValue: 0)
     private static let preferredTimescale: CMTimeScale = 1000000000
-    private static let minimumFrameDuration: TimeInterval = 1.0 / 240.0
+    private static let minimumFrameDuration: TimeInterval = 1.0 / 60.0
+    private static let maximumFrameDuration: TimeInterval = 1.0 / 15.0
+    private static let minimumMonotonicStep: TimeInterval = 1.0 / 600.0
     private static let maximumVideoCaptureLatency: TimeInterval = 0.25
     private static let videoCaptureLatencySmoothingFactor: Double = 0.2
 
@@ -102,6 +104,7 @@ public final class Screen: ScreenObjectContainerConvertible {
         }
     }
     private var presentationTimeStamp: CMTime = .zero
+    private var lastFrameDuration: TimeInterval = 1.0 / 30.0
 
     /// Creates a screen object.
     public init() {
@@ -162,10 +165,12 @@ public final class Screen: ScreenObjectContainerConvertible {
         if let dictionary = CVBufferCopyAttachments(pixelBuffer, .shouldNotPropagate) {
             CVBufferSetAttachments(pixelBuffer, dictionary, .shouldPropagate)
         }
-        let frameDuration = max(updateFrame.targetTimestamp - updateFrame.timestamp, Self.minimumFrameDuration)
+        let rawFrameDuration = updateFrame.targetTimestamp - updateFrame.timestamp
+        let frameDuration = min(max(rawFrameDuration > 0 ? rawFrameDuration : lastFrameDuration, Self.minimumFrameDuration), Self.maximumFrameDuration)
+        lastFrameDuration = frameDuration
         var presentationTimeStamp = CMTime(seconds: updateFrame.timestamp - videoCaptureLatency, preferredTimescale: Self.preferredTimescale)
         if presentationTimeStamp <= self.presentationTimeStamp {
-            presentationTimeStamp = self.presentationTimeStamp + CMTime(seconds: frameDuration, preferredTimescale: Self.preferredTimescale)
+            presentationTimeStamp = self.presentationTimeStamp + CMTime(seconds: Self.minimumMonotonicStep, preferredTimescale: Self.preferredTimescale)
         }
         self.presentationTimeStamp = presentationTimeStamp
         var timingInfo = CMSampleTimingInfo(
